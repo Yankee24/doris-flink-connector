@@ -14,35 +14,36 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+
 package org.apache.doris.flink.source.split;
 
-import org.apache.doris.flink.rest.PartitionDefinition;
 import org.apache.flink.api.connector.source.SourceSplit;
 
+import org.apache.doris.flink.rest.PartitionDefinition;
+
 import javax.annotation.Nullable;
+
 import java.util.Objects;
 
-/**
- * A {@link SourceSplit} that represents a {@link PartitionDefinition}.
- **/
+/** A {@link SourceSplit} that represents a {@link PartitionDefinition}. */
 public class DorisSourceSplit implements SourceSplit {
-
+    private String id;
     private final PartitionDefinition partitionDefinition;
 
     /**
      * The splits are frequently serialized into checkpoints. Caching the byte representation makes
      * repeated serialization cheap. This field is used by {@link DorisSourceSplitSerializer}.
      */
-    @Nullable
-    transient byte[] serializedFormCache;
+    @Nullable transient byte[] serializedFormCache;
 
-    public DorisSourceSplit(PartitionDefinition partitionDefinition) {
+    public DorisSourceSplit(String id, PartitionDefinition partitionDefinition) {
+        this.id = id;
         this.partitionDefinition = partitionDefinition;
     }
 
     @Override
     public String splitId() {
-        return partitionDefinition.getBeAddress();
+        return id;
     }
 
     public PartitionDefinition getPartitionDefinition() {
@@ -51,9 +52,11 @@ public class DorisSourceSplit implements SourceSplit {
 
     @Override
     public String toString() {
-        return String.format("DorisSourceSplit: %s.%s,be=%s,tablets=%s",
+        return String.format(
+                "DorisSourceSplit: database=%s,table=%s,id=%s,be=%s,tablets=%s",
                 partitionDefinition.getDatabase(),
                 partitionDefinition.getTable(),
+                id,
                 partitionDefinition.getBeAddress(),
                 partitionDefinition.getTabletIds());
     }

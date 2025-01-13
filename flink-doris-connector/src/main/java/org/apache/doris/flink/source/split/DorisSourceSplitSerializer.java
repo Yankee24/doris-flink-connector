@@ -14,32 +14,32 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+
 package org.apache.doris.flink.source.split;
 
-import org.apache.doris.flink.rest.PartitionDefinition;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.core.memory.DataOutputView;
 
+import org.apache.doris.flink.rest.PartitionDefinition;
+
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
-/**
- * A serializer for the {@link DorisSourceSplit}.
- **/
-public class DorisSourceSplitSerializer
-        implements SimpleVersionedSerializer<DorisSourceSplit> {
+/** A serializer for the {@link DorisSourceSplit}. */
+public class DorisSourceSplitSerializer implements SimpleVersionedSerializer<DorisSourceSplit> {
 
     public static final DorisSourceSplitSerializer INSTANCE = new DorisSourceSplitSerializer();
 
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
     private static void writeLongArray(DataOutputView out, Long[] values) throws IOException {
         out.writeInt(values.length);
@@ -71,12 +71,18 @@ public class DorisSourceSplitSerializer
         }
 
         final DataOutputSerializer out = SERIALIZER_CACHE.get();
+
         PartitionDefinition partDef = split.getPartitionDefinition();
         out.writeUTF(partDef.getDatabase());
         out.writeUTF(partDef.getTable());
         out.writeUTF(partDef.getBeAddress());
-        writeLongArray(out, partDef.getTabletIds().toArray(new Long[]{}));
-        out.writeUTF(partDef.getQueryPlan());
+        writeLongArray(out, partDef.getTabletIds().toArray(new Long[] {}));
+        // writeUTF has a length limit, but the query plan is sometimes very long
+        final byte[] queryPlanBytes = partDef.getQueryPlan().getBytes(StandardCharsets.UTF_8);
+        out.writeInt(queryPlanBytes.length);
+        out.write(queryPlanBytes);
+
+        out.writeUTF(split.splitId());
 
         final byte[] result = out.getCopyOfBuffer();
         out.clear();
@@ -90,21 +96,36 @@ public class DorisSourceSplitSerializer
 
     @Override
     public DorisSourceSplit deserialize(int version, byte[] serialized) throws IOException {
-        if (version == 1) {
-            return deserialize(serialized);
+        switch (version) {
+            case 1:
+            case 2:
+                return deserializeSplit(version, serialized);
+            default:
+                throw new IOException("Unknown version: " + version);
         }
-        throw new IOException("Unknown version: " + version);
     }
 
-    private DorisSourceSplit deserialize(byte[] serialized) throws IOException {
+    private DorisSourceSplit deserializeSplit(int version, byte[] serialized) throws IOException {
         final DataInputDeserializer in = new DataInputDeserializer(serialized);
         final String database = in.readUTF();
         final String table = in.readUTF();
         final String beAddress = in.readUTF();
         Long[] vals = readLongArray(in);
         final Set<Long> tabletIds = new HashSet<>(Arrays.asList(vals));
-        final String queryPlan = in.readUTF();
-        PartitionDefinition partDef = new PartitionDefinition(database, table, beAddress, tabletIds, queryPlan);
-        return new DorisSourceSplit(partDef);
+
+        // read query plan
+        final int len = in.readInt();
+        final byte[] bytes = new byte[len];
+        in.read(bytes);
+        final String queryPlan = new String(bytes, StandardCharsets.UTF_8);
+
+        // read split id
+        String splitId = "splitId";
+        if (version >= 2) {
+            splitId = in.readUTF();
+        }
+        PartitionDefinition partDef =
+                new PartitionDefinition(database, table, beAddress, tabletIds, queryPlan);
+        return new DorisSourceSplit(splitId, partDef);
     }
 }

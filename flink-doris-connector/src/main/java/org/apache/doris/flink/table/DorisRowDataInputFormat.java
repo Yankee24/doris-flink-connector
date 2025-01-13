@@ -14,13 +14,9 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+
 package org.apache.doris.flink.table;
 
-import org.apache.doris.flink.cfg.DorisOptions;
-import org.apache.doris.flink.cfg.DorisReadOptions;
-import org.apache.doris.flink.datastream.ScalaValueReader;
-import org.apache.doris.flink.deserialization.converter.DorisRowConverter;
-import org.apache.doris.flink.rest.PartitionDefinition;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.io.DefaultInputSplitAssigner;
 import org.apache.flink.api.common.io.InputFormat;
@@ -30,26 +26,26 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.io.InputSplitAssigner;
-import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.data.StringData;
-import org.apache.flink.table.types.logical.DecimalType;
-import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
+
+import org.apache.doris.flink.cfg.DorisOptions;
+import org.apache.doris.flink.cfg.DorisReadOptions;
+import org.apache.doris.flink.deserialization.converter.DorisRowConverter;
+import org.apache.doris.flink.rest.PartitionDefinition;
+import org.apache.doris.flink.source.reader.DorisValueReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.sql.PreparedStatement;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * InputFormat for {@link DorisDynamicTableSource}.
- */
+/** InputFormat for {@link DorisDynamicTableSource}. */
 @Internal
-public class DorisRowDataInputFormat extends RichInputFormat<RowData, DorisTableInputSplit> implements ResultTypeQueryable<RowData> {
+public class DorisRowDataInputFormat extends RichInputFormat<RowData, DorisTableInputSplit>
+        implements ResultTypeQueryable<RowData> {
 
     private static final long serialVersionUID = 1L;
     private static final Logger LOG = LoggerFactory.getLogger(DorisRowDataInputFormat.class);
@@ -59,15 +55,16 @@ public class DorisRowDataInputFormat extends RichInputFormat<RowData, DorisTable
     private List<PartitionDefinition> dorisPartitions;
     private TypeInformation<RowData> rowDataTypeInfo;
 
-    private ScalaValueReader scalaValueReader;
+    private DorisValueReader valueReader;
     private transient boolean hasNext;
 
     private final DorisRowConverter rowConverter;
 
-    public DorisRowDataInputFormat(DorisOptions options,
-                                   List<PartitionDefinition> dorisPartitions,
-                                   DorisReadOptions readOptions,
-                                   RowType rowType) {
+    public DorisRowDataInputFormat(
+            DorisOptions options,
+            List<PartitionDefinition> dorisPartitions,
+            DorisReadOptions readOptions,
+            RowType rowType) {
         this.options = options;
         this.dorisPartitions = dorisPartitions;
         this.readOptions = readOptions;
@@ -76,37 +73,32 @@ public class DorisRowDataInputFormat extends RichInputFormat<RowData, DorisTable
 
     @Override
     public void configure(Configuration parameters) {
-        //do nothing here
+        // do nothing here
     }
 
     @Override
     public void openInputFormat() {
-        //called once per inputFormat (on open)
+        // called once per inputFormat (on open)
     }
 
     @Override
     public void closeInputFormat() {
-        //called once per inputFormat (on close)
+        // called once per inputFormat (on close)
     }
 
     /**
-     * Connects to the source database and executes the query in a <b>parallel
-     * fashion</b> if
-     * this {@link InputFormat} is built using a parameterized query (i.e. using
-     * a {@link PreparedStatement})
-     * and a proper {@link  }, in a <b>non-parallel
-     * fashion</b> otherwise.
+     * Connects to the source database and executes the query in a <b>parallel fashion</b> if this
+     * {@link InputFormat} is built using a parameterized query (i.e. using a {@link
+     * PreparedStatement}) and a proper, in a <b>non-parallel fashion</b> otherwise
      *
-     * @param inputSplit which is ignored if this InputFormat is executed as a
-     *                   non-parallel source,
-     *                   a "hook" to the query parameters otherwise (using its
-     *                   <i>splitNumber</i>)
+     * @param inputSplit which is ignored if this InputFormat is executed as a non-parallel source,
+     *     a "hook" to the query parameters otherwise (using its <i>splitNumber</i>)
      * @throws IOException if there's an error during the execution of the query
      */
     @Override
     public void open(DorisTableInputSplit inputSplit) throws IOException {
-        scalaValueReader = new ScalaValueReader(inputSplit.partition, options, readOptions);
-        hasNext = scalaValueReader.hasNext();
+        valueReader = new DorisValueReader(inputSplit.partition, options, readOptions);
+        hasNext = valueReader.hasNext();
     }
 
     /**
@@ -115,9 +107,7 @@ public class DorisRowDataInputFormat extends RichInputFormat<RowData, DorisTable
      * @throws IOException Indicates that a resource could not be closed.
      */
     @Override
-    public void close() throws IOException {
-
-    }
+    public void close() throws IOException {}
 
     @Override
     public TypeInformation<RowData> getProducedType() {
@@ -147,25 +137,11 @@ public class DorisRowDataInputFormat extends RichInputFormat<RowData, DorisTable
         if (!hasNext) {
             return null;
         }
-        List next = (List) scalaValueReader.next();
+        List next = valueReader.next();
         RowData genericRowData = rowConverter.convertInternal(next);
-        //update hasNext after we've read the record
-        hasNext = scalaValueReader.hasNext();
+        // update hasNext after we've read the record
+        hasNext = valueReader.hasNext();
         return genericRowData;
-    }
-
-    private Object deserialize(LogicalType type, Object val) {
-        switch (type.getTypeRoot()) {
-            case DECIMAL:
-                final DecimalType decimalType = ((DecimalType) type);
-                final int precision = decimalType.getPrecision();
-                final int scala = decimalType.getScale();
-                return DecimalData.fromBigDecimal((BigDecimal) val, precision, scala);
-            case VARCHAR:
-                return StringData.fromString((String) val);
-            default:
-                return val;
-        }
     }
 
     @Override
@@ -198,15 +174,12 @@ public class DorisRowDataInputFormat extends RichInputFormat<RowData, DorisTable
         return new Builder();
     }
 
-    /**
-     * Builder for {@link DorisRowDataInputFormat}.
-     */
+    /** Builder for {@link DorisRowDataInputFormat}. */
     public static class Builder {
         private DorisOptions.Builder optionsBuilder;
         private List<PartitionDefinition> partitions;
         private DorisReadOptions readOptions;
         private RowType rowType;
-
 
         public Builder() {
             this.optionsBuilder = DorisOptions.builder();
@@ -214,6 +187,11 @@ public class DorisRowDataInputFormat extends RichInputFormat<RowData, DorisTable
 
         public Builder setFenodes(String fenodes) {
             this.optionsBuilder.setFenodes(fenodes);
+            return this;
+        }
+
+        public Builder setBenodes(String benodes) {
+            this.optionsBuilder.setBenodes(benodes);
             return this;
         }
 
@@ -249,8 +227,7 @@ public class DorisRowDataInputFormat extends RichInputFormat<RowData, DorisTable
 
         public DorisRowDataInputFormat build() {
             return new DorisRowDataInputFormat(
-                optionsBuilder.build(), partitions, readOptions, rowType
-            );
+                    optionsBuilder.build(), partitions, readOptions, rowType);
         }
     }
 }

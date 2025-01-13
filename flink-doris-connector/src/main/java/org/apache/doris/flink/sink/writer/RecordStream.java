@@ -20,9 +20,7 @@ package org.apache.doris.flink.sink.writer;
 import java.io.IOException;
 import java.io.InputStream;
 
-/**
- * Record Stream for writing record.
- */
+/** Record Stream for writing record. */
 public class RecordStream extends InputStream {
     private final RecordBuffer recordBuffer;
 
@@ -31,15 +29,23 @@ public class RecordStream extends InputStream {
         return 0;
     }
 
-    public RecordStream(int bufferSize, int bufferCount) {
-        this.recordBuffer = new RecordBuffer(bufferSize, bufferCount);
+    public RecordStream(int bufferSize, int bufferCount, boolean useCache) {
+        if (useCache) {
+            this.recordBuffer = new CacheRecordBuffer(bufferSize, bufferCount);
+        } else {
+            this.recordBuffer = new RecordBuffer(bufferSize, bufferCount);
+        }
     }
 
-    public void startInput() {
+    public void startInput(boolean isResume) throws IOException {
+        // if resume from breakpoint, do not recycle cache buffer
+        if (!isResume && recordBuffer instanceof CacheRecordBuffer) {
+            ((CacheRecordBuffer) recordBuffer).recycleCache();
+        }
         recordBuffer.startBufferData();
     }
 
-    public void endInput() throws IOException{
+    public void endInput() throws IOException {
         recordBuffer.stopBufferData();
     }
 

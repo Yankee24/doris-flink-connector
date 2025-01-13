@@ -14,7 +14,14 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+
 package org.apache.doris.flink.datastream;
+
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
 
 import org.apache.doris.flink.cfg.DorisOptions;
 import org.apache.doris.flink.cfg.DorisReadOptions;
@@ -23,23 +30,18 @@ import org.apache.doris.flink.deserialization.DorisDeserializationSchema;
 import org.apache.doris.flink.exception.DorisException;
 import org.apache.doris.flink.rest.PartitionDefinition;
 import org.apache.doris.flink.rest.RestService;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
-import org.apache.flink.calcite.shaded.com.google.common.collect.Lists;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
+import org.apache.doris.flink.source.reader.DorisValueReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.List;
 
-
-
-/**
- * DorisSource
- **/
-
-public class DorisSourceFunction extends RichParallelSourceFunction<List<?>> implements ResultTypeQueryable<List<?>> {
+/** DorisSource. */
+@Deprecated
+@PublicEvolving
+public class DorisSourceFunction extends RichParallelSourceFunction<List<?>>
+        implements ResultTypeQueryable<List<?>> {
 
     private static final Logger logger = LoggerFactory.getLogger(DorisSourceFunction.class);
 
@@ -48,9 +50,10 @@ public class DorisSourceFunction extends RichParallelSourceFunction<List<?>> imp
     private final DorisReadOptions readOptions;
     private transient volatile boolean isRunning;
     private List<PartitionDefinition> dorisPartitions;
-    private List<PartitionDefinition> taskDorisPartitions = Lists.newArrayList();
+    private List<PartitionDefinition> taskDorisPartitions = new ArrayList<>();
 
-    public DorisSourceFunction(DorisStreamOptions streamOptions, DorisDeserializationSchema<List<?>> deserializer) {
+    public DorisSourceFunction(
+            DorisStreamOptions streamOptions, DorisDeserializationSchema<List<?>> deserializer) {
         this.deserializer = deserializer;
         this.options = streamOptions.getOptions();
         this.readOptions = streamOptions.getReadOptions();
@@ -69,9 +72,7 @@ public class DorisSourceFunction extends RichParallelSourceFunction<List<?>> imp
         assignTaskPartitions();
     }
 
-    /**
-     * Assign patitions to each task.
-     */
+    /** Assign partitions to each task. */
     private void assignTaskPartitions() {
         int taskIndex = getRuntimeContext().getIndexOfThisSubtask();
         int totalTasks = getRuntimeContext().getNumberOfParallelSubtasks();
@@ -87,11 +88,14 @@ public class DorisSourceFunction extends RichParallelSourceFunction<List<?>> imp
     @Override
     public void run(SourceContext<List<?>> sourceContext) {
         for (PartitionDefinition partitions : taskDorisPartitions) {
-            try (ScalaValueReader scalaValueReader = new ScalaValueReader(partitions, options, readOptions)) {
-                while (isRunning && scalaValueReader.hasNext()) {
-                    List<?> next = scalaValueReader.next();
+            try (DorisValueReader valueReader =
+                    new DorisValueReader(partitions, options, readOptions)) {
+                while (isRunning && valueReader.hasNext()) {
+                    List<?> next = valueReader.next();
                     sourceContext.collect(next);
                 }
+            } catch (Exception e) {
+                logger.error("close reader resource failed,", e);
             }
         }
     }

@@ -17,113 +17,169 @@
 
 package org.apache.doris.flink.sink.committer;
 
-import org.apache.flink.api.connector.sink.Committer;
+import org.apache.flink.api.connector.sink2.Committer;
+import org.apache.flink.util.Preconditions;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.doris.flink.cfg.DorisExecutionOptions;
 import org.apache.doris.flink.cfg.DorisOptions;
 import org.apache.doris.flink.cfg.DorisReadOptions;
 import org.apache.doris.flink.exception.DorisRuntimeException;
 import org.apache.doris.flink.rest.RestService;
+import org.apache.doris.flink.sink.BackendUtil;
 import org.apache.doris.flink.sink.DorisCommittable;
 import org.apache.doris.flink.sink.HttpPutBuilder;
 import org.apache.doris.flink.sink.HttpUtil;
 import org.apache.doris.flink.sink.ResponseUtil;
+import org.apache.http.StatusLine;
 import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPut;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.util.EntityUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.Closeable;
 import java.io.IOException;
-import java.util.Collections;
+import java.util.Collection;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
-import static org.apache.doris.flink.sink.LoadStatus.FAIL;
+import static org.apache.doris.flink.sink.LoadStatus.SUCCESS;
 
-/**
- * The committer to commit transaction.
- */
-public class DorisCommitter implements Committer<DorisCommittable> {
+/** The committer to commit transaction. */
+public class DorisCommitter implements Committer<DorisCommittable>, Closeable {
     private static final Logger LOG = LoggerFactory.getLogger(DorisCommitter.class);
     private static final String commitPattern = "http://%s/api/%s/_stream_load_2pc";
     private final CloseableHttpClient httpClient;
     private final DorisOptions dorisOptions;
     private final DorisReadOptions dorisReadOptions;
-    int maxRetry;
+    private final ObjectMapper jsonMapper = new ObjectMapper();
+    private final BackendUtil backendUtil;
 
-    public DorisCommitter(DorisOptions dorisOptions, DorisReadOptions dorisReadOptions, int maxRetry) {
-        this(dorisOptions, dorisReadOptions, maxRetry, new HttpUtil().getHttpClient());
+    int maxRetry;
+    final boolean ignoreCommitError;
+
+    public DorisCommitter(
+            DorisOptions dorisOptions,
+            DorisReadOptions dorisReadOptions,
+            DorisExecutionOptions executionOptions) {
+        this(
+                dorisOptions,
+                dorisReadOptions,
+                executionOptions,
+                new HttpUtil(dorisReadOptions).getHttpClient());
     }
 
-    public DorisCommitter(DorisOptions dorisOptions, DorisReadOptions dorisReadOptions, int maxRetry, CloseableHttpClient client) {
+    public DorisCommitter(
+            DorisOptions dorisOptions,
+            DorisReadOptions dorisReadOptions,
+            DorisExecutionOptions executionOptions,
+            CloseableHttpClient client) {
         this.dorisOptions = dorisOptions;
         this.dorisReadOptions = dorisReadOptions;
-        this.maxRetry = maxRetry;
+        Preconditions.checkArgument(maxRetry >= 0);
+        this.maxRetry = executionOptions.getMaxRetries();
+        this.ignoreCommitError = executionOptions.ignoreCommitError();
         this.httpClient = client;
+        this.backendUtil =
+                StringUtils.isNotEmpty(dorisOptions.getBenodes())
+                        ? new BackendUtil(dorisOptions.getBenodes())
+                        : new BackendUtil(
+                                RestService.getBackendsV2(dorisOptions, dorisReadOptions, LOG));
     }
 
     @Override
-    public List<DorisCommittable> commit(List<DorisCommittable> committableList) throws IOException, InterruptedException {
-        for (DorisCommittable committable : committableList) {
-            commitTransaction(committable);
+    public void commit(Collection<CommitRequest<DorisCommittable>> requests)
+            throws IOException, InterruptedException {
+        for (CommitRequest<DorisCommittable> request : requests) {
+            commitTransaction(request.getCommittable());
         }
-        return Collections.emptyList();
     }
 
     private void commitTransaction(DorisCommittable committable) throws IOException {
-        int statusCode = -1;
-        String reasonPhrase = null;
-        int retry = 0;
+        // basic params
+        HttpPutBuilder builder =
+                new HttpPutBuilder()
+                        .addCommonHeader()
+                        .baseAuth(dorisOptions.getUsername(), dorisOptions.getPassword())
+                        .addTxnId(committable.getTxnID())
+                        .commit();
+
+        // hostPort
         String hostPort = committable.getHostPort();
-        CloseableHttpResponse response = null;
-        while (retry++ < maxRetry) {
-            HttpPutBuilder putBuilder = new HttpPutBuilder();
-            putBuilder.setUrl(String.format(commitPattern, hostPort, committable.getDb()))
-                    .baseAuth(dorisOptions.getUsername(), dorisOptions.getPassword())
-                    .addCommonHeader()
-                    .addTxnId(committable.getTxnID())
-                    .setEmptyEntity()
-                    .commit();
-            try {
-                response = httpClient.execute(putBuilder.build());
-            } catch (IOException e) {
-                hostPort = RestService.getBackend(dorisOptions, dorisReadOptions, LOG);
-                continue;
-            }
-            statusCode = response.getStatusLine().getStatusCode();
-            reasonPhrase = response.getStatusLine().getReasonPhrase();
-            if (statusCode != 200) {
-                LOG.warn("commit failed with {}, reason {}", hostPort, reasonPhrase);
-                hostPort = RestService.getBackend(dorisOptions, dorisReadOptions, LOG);
-            } else {
-                break;
-            }
-        }
+        LOG.info("commit txn {} to host {}", committable.getTxnID(), hostPort);
+        Throwable ex = new Throwable();
+        int retry = 0;
+        while (retry <= maxRetry) {
+            // get latest-url
+            String url = String.format(commitPattern, hostPort, committable.getDb());
+            HttpPut httpPut = builder.setUrl(url).setEmptyEntity().build();
 
-        if (statusCode != 200) {
-            throw new DorisRuntimeException("stream load error: " + reasonPhrase);
-        }
+            // http execute...
+            try (CloseableHttpResponse response = httpClient.execute(httpPut)) {
+                StatusLine statusLine = response.getStatusLine();
+                if (200 == statusLine.getStatusCode()) {
+                    if (response.getEntity() != null) {
+                        String loadResult = EntityUtils.toString(response.getEntity());
+                        Map<String, String> res =
+                                jsonMapper.readValue(
+                                        loadResult,
+                                        new TypeReference<HashMap<String, String>>() {});
+                        if (res.get("status").equals(SUCCESS)) {
+                            LOG.info("load result {}", loadResult);
+                        } else if (ResponseUtil.isCommitted(res.get("msg"))) {
+                            LOG.info(
+                                    "transaction {} has already committed successfully, skipping, load response is {}",
+                                    committable.getTxnID(),
+                                    res.get("msg"));
+                        } else {
+                            throw new DorisRuntimeException(
+                                    "commit transaction failed " + loadResult);
+                        }
+                        return;
+                    }
+                }
+                String reasonPhrase = statusLine.getReasonPhrase();
+                LOG.error("commit failed with {}, reason {}", hostPort, reasonPhrase);
+                if (retry == maxRetry) {
+                    ex = new DorisRuntimeException("commit transaction error: " + reasonPhrase);
+                }
+                hostPort = backendUtil.getAvailableBackend();
+            } catch (Exception e) {
+                LOG.error("commit transaction failed, to retry, {}", e.getMessage());
+                ex = e;
+                hostPort = backendUtil.getAvailableBackend();
+            }
 
-        ObjectMapper mapper = new ObjectMapper();
-        if (response.getEntity() != null) {
-            String loadResult = EntityUtils.toString(response.getEntity());
-            Map<String, String> res = mapper.readValue(loadResult, new TypeReference<HashMap<String, String>>() {
-            });
-            if (res.get("status").equals(FAIL) && !ResponseUtil.isCommitted(res.get("msg"))) {
-                throw new DorisRuntimeException("Commit failed " + loadResult);
-            } else {
-                LOG.info("load result {}", loadResult);
+            if (retry++ >= maxRetry) {
+                if (ignoreCommitError) {
+                    // Generally used when txn(stored in checkpoint) expires and unexpected
+                    // errors occur in commit.
+
+                    // It should be noted that you must manually ensure that the txn has been
+                    // successfully submitted to doris, otherwise there may be a risk of data
+                    // loss.
+                    LOG.error(
+                            "Unable to commit transaction {} and data has been potentially lost ",
+                            committable,
+                            ex);
+                } else {
+                    throw new DorisRuntimeException("commit transaction error, ", ex);
+                }
             }
         }
     }
 
     @Override
-    public void close() throws Exception {
+    public void close() {
         if (httpClient != null) {
-            httpClient.close();
+            try {
+                httpClient.close();
+            } catch (IOException e) {
+            }
         }
     }
 }

@@ -19,17 +19,38 @@ package org.apache.doris.flink.sink.writer;
 
 import java.util.Objects;
 
-/**
- * hold state for DorisWriter.
- */
+/** hold state for DorisWriter. */
 public class DorisWriterState {
     String labelPrefix;
+    String database;
+    String table;
+    int subtaskId;
+
     public DorisWriterState(String labelPrefix) {
         this.labelPrefix = labelPrefix;
     }
 
+    public DorisWriterState(String labelPrefix, String database, String table, int subtaskId) {
+        this.labelPrefix = labelPrefix;
+        this.database = database;
+        this.table = table;
+        this.subtaskId = subtaskId;
+    }
+
     public String getLabelPrefix() {
         return labelPrefix;
+    }
+
+    public String getDatabase() {
+        return database;
+    }
+
+    public String getTable() {
+        return table;
+    }
+
+    public int getSubtaskId() {
+        return subtaskId;
     }
 
     @Override
@@ -41,18 +62,31 @@ public class DorisWriterState {
             return false;
         }
         DorisWriterState that = (DorisWriterState) o;
-        return Objects.equals(labelPrefix, that.labelPrefix);
+        return Objects.equals(labelPrefix, that.labelPrefix)
+                && Objects.equals(database, that.database)
+                && Objects.equals(table, that.table)
+                && Objects.equals(subtaskId, that.subtaskId);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(labelPrefix);
+        return Objects.hash(labelPrefix, database, table, subtaskId);
     }
 
     @Override
     public String toString() {
-        return "DorisWriterState{" +
-                "labelPrefix='" + labelPrefix + '\'' +
-                '}';
+        return "DorisWriterState{"
+                + "labelPrefix='"
+                + labelPrefix
+                + '\''
+                + ", database='"
+                + database
+                + '\''
+                + ", table='"
+                + table
+                + '\''
+                + ", subtaskId="
+                + subtaskId
+                + '}';
     }
 }

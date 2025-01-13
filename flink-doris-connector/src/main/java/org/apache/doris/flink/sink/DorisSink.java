@@ -17,77 +17,133 @@
 
 package org.apache.doris.flink.sink;
 
-import org.apache.doris.flink.cfg.DorisExecutionOptions;
-import org.apache.doris.flink.cfg.DorisOptions;
-import org.apache.doris.flink.cfg.DorisReadOptions;
-import org.apache.doris.flink.sink.committer.DorisCommitter;
-import org.apache.doris.flink.sink.writer.DorisRecordSerializer;
-import org.apache.doris.flink.sink.writer.DorisWriter;
-import org.apache.flink.api.connector.sink.Committer;
-import org.apache.doris.flink.sink.writer.DorisWriterState;
-import org.apache.doris.flink.sink.writer.DorisWriterStateSerializer;
-import org.apache.flink.api.connector.sink.GlobalCommitter;
-import org.apache.flink.api.connector.sink.Sink;
-import org.apache.flink.api.connector.sink.SinkWriter;
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.connector.sink2.Committer;
+import org.apache.flink.api.connector.sink2.StatefulSink;
+import org.apache.flink.api.connector.sink2.TwoPhaseCommittingSink;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.util.Preconditions;
 
+import org.apache.doris.flink.cfg.DorisExecutionOptions;
+import org.apache.doris.flink.cfg.DorisOptions;
+import org.apache.doris.flink.cfg.DorisReadOptions;
+import org.apache.doris.flink.rest.RestService;
+import org.apache.doris.flink.sink.batch.DorisBatchWriter;
+import org.apache.doris.flink.sink.committer.DorisCommitter;
+import org.apache.doris.flink.sink.copy.CopyCommittableSerializer;
+import org.apache.doris.flink.sink.copy.DorisCopyCommitter;
+import org.apache.doris.flink.sink.copy.DorisCopyWriter;
+import org.apache.doris.flink.sink.writer.DorisAbstractWriter;
+import org.apache.doris.flink.sink.writer.DorisWriter;
+import org.apache.doris.flink.sink.writer.DorisWriterState;
+import org.apache.doris.flink.sink.writer.DorisWriterStateSerializer;
+import org.apache.doris.flink.sink.writer.WriteMode;
+import org.apache.doris.flink.sink.writer.serializer.DorisRecordSerializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
-import java.util.List;
-import java.util.Optional;
+import java.util.Collection;
+import java.util.Collections;
 
 /**
- * Load data into Doris based on 2PC.
- * see {@link DorisWriter} and {@link DorisCommitter}.
+ * Load data into Doris based on 2PC. see {@link DorisWriter} and {@link DorisCommitter}.
+ *
  * @param <IN> type of record.
  */
-public class DorisSink<IN> implements Sink<IN, DorisCommittable, DorisWriterState, DorisCommittable> {
-
+@PublicEvolving
+public class DorisSink<IN>
+        implements StatefulSink<IN, DorisWriterState>,
+                TwoPhaseCommittingSink<IN, DorisAbstractCommittable> {
+    private static final Logger LOG = LoggerFactory.getLogger(DorisSink.class);
     private final DorisOptions dorisOptions;
     private final DorisReadOptions dorisReadOptions;
     private final DorisExecutionOptions dorisExecutionOptions;
     private final DorisRecordSerializer<IN> serializer;
 
-    public DorisSink(DorisOptions dorisOptions,
-                     DorisReadOptions dorisReadOptions,
-                     DorisExecutionOptions dorisExecutionOptions,
-                     DorisRecordSerializer<IN> serializer) {
+    public DorisSink(
+            DorisOptions dorisOptions,
+            DorisReadOptions dorisReadOptions,
+            DorisExecutionOptions dorisExecutionOptions,
+            DorisRecordSerializer<IN> serializer) {
         this.dorisOptions = dorisOptions;
         this.dorisReadOptions = dorisReadOptions;
         this.dorisExecutionOptions = dorisExecutionOptions;
         this.serializer = serializer;
+        checkKeyType();
+    }
+
+    /** The uniq model has 2pc close by default unless 2pc is forced open. */
+    private void checkKeyType() {
+        if (dorisExecutionOptions.enabled2PC()
+                && !dorisExecutionOptions.force2PC()
+                && RestService.isUniqueKeyType(dorisOptions, dorisReadOptions, LOG)) {
+            dorisExecutionOptions.setEnable2PC(false);
+        }
     }
 
     @Override
-    public SinkWriter<IN, DorisCommittable, DorisWriterState> createWriter(InitContext initContext, List<DorisWriterState> state) throws IOException {
-        DorisWriter<IN> dorisWriter = new DorisWriter<IN>(initContext, state, serializer, dorisOptions, dorisReadOptions, dorisExecutionOptions);
-        dorisWriter.initializeLoad(state);
-        return dorisWriter;
+    public DorisAbstractWriter createWriter(InitContext initContext) throws IOException {
+        return getDorisAbstractWriter(initContext, Collections.emptyList());
     }
 
     @Override
-    public Optional<SimpleVersionedSerializer<DorisWriterState>> getWriterStateSerializer() {
-        return Optional.of(new DorisWriterStateSerializer());
+    public Committer createCommitter() throws IOException {
+        if (WriteMode.STREAM_LOAD.equals(dorisExecutionOptions.getWriteMode())
+                || WriteMode.STREAM_LOAD_BATCH.equals(dorisExecutionOptions.getWriteMode())) {
+            return new DorisCommitter(dorisOptions, dorisReadOptions, dorisExecutionOptions);
+        } else if (WriteMode.COPY.equals(dorisExecutionOptions.getWriteMode())) {
+            return new DorisCopyCommitter(dorisOptions, dorisExecutionOptions.getMaxRetries());
+        }
+        throw new IllegalArgumentException(
+                "Unsupported write mode " + dorisExecutionOptions.getWriteMode());
     }
 
     @Override
-    public Optional<Committer<DorisCommittable>> createCommitter() throws IOException {
-        return Optional.of(new DorisCommitter(dorisOptions, dorisReadOptions, dorisExecutionOptions.getMaxRetries()));
+    public DorisAbstractWriter restoreWriter(
+            InitContext initContext, Collection<DorisWriterState> recoveredState)
+            throws IOException {
+        return getDorisAbstractWriter(initContext, recoveredState);
+    }
+
+    @VisibleForTesting
+    public DorisAbstractWriter getDorisAbstractWriter(
+            InitContext initContext, Collection<DorisWriterState> states) {
+        if (WriteMode.STREAM_LOAD.equals(dorisExecutionOptions.getWriteMode())) {
+            return new DorisWriter<>(
+                    initContext,
+                    states,
+                    serializer,
+                    dorisOptions,
+                    dorisReadOptions,
+                    dorisExecutionOptions);
+        } else if (WriteMode.STREAM_LOAD_BATCH.equals(dorisExecutionOptions.getWriteMode())) {
+            return new DorisBatchWriter<>(
+                    initContext, serializer, dorisOptions, dorisReadOptions, dorisExecutionOptions);
+        } else if (WriteMode.COPY.equals(dorisExecutionOptions.getWriteMode())) {
+            return new DorisCopyWriter(
+                    initContext, serializer, dorisOptions, dorisReadOptions, dorisExecutionOptions);
+        }
+        throw new IllegalArgumentException(
+                "Unsupported write mode " + dorisExecutionOptions.getWriteMode());
     }
 
     @Override
-    public Optional<GlobalCommitter<DorisCommittable, DorisCommittable>> createGlobalCommitter() throws IOException {
-        return Optional.empty();
+    public SimpleVersionedSerializer<DorisWriterState> getWriterStateSerializer() {
+        return new DorisWriterStateSerializer();
     }
 
     @Override
-    public Optional<SimpleVersionedSerializer<DorisCommittable>> getCommittableSerializer() {
-        return Optional.of(new DorisCommittableSerializer());
-    }
-
-    @Override
-    public Optional<SimpleVersionedSerializer<DorisCommittable>> getGlobalCommittableSerializer() {
-        return Optional.empty();
+    public SimpleVersionedSerializer getCommittableSerializer() {
+        if (WriteMode.STREAM_LOAD.equals(dorisExecutionOptions.getWriteMode())
+                || WriteMode.STREAM_LOAD_BATCH.equals(dorisExecutionOptions.getWriteMode())) {
+            return new DorisCommittableSerializer();
+        } else if (WriteMode.COPY.equals(dorisExecutionOptions.getWriteMode())) {
+            return new CopyCommittableSerializer();
+        }
+        throw new IllegalArgumentException(
+                "Unsupported write mode " + dorisExecutionOptions.getWriteMode());
     }
 
     public static <IN> Builder<IN> builder() {
@@ -96,6 +152,7 @@ public class DorisSink<IN> implements Sink<IN, DorisCommittable, DorisWriterStat
 
     /**
      * build for DorisSink.
+     *
      * @param <IN> record type.
      */
     public static class Builder<IN> {
@@ -104,35 +161,65 @@ public class DorisSink<IN> implements Sink<IN, DorisCommittable, DorisWriterStat
         private DorisExecutionOptions dorisExecutionOptions;
         private DorisRecordSerializer<IN> serializer;
 
+        /**
+         * Sets the DorisOptions for the DorisSink.
+         *
+         * @param dorisOptions the common options of the doris cluster.
+         * @return this DorisSink.Builder.
+         */
         public Builder<IN> setDorisOptions(DorisOptions dorisOptions) {
             this.dorisOptions = dorisOptions;
             return this;
         }
 
+        /**
+         * Sets the DorisReadOptions for the DorisSink.
+         *
+         * @param dorisReadOptions the read options of the DorisSink.
+         * @return this DorisSink.Builder.
+         */
         public Builder<IN> setDorisReadOptions(DorisReadOptions dorisReadOptions) {
             this.dorisReadOptions = dorisReadOptions;
             return this;
         }
 
+        /**
+         * Sets the DorisExecutionOptions for the DorisSink.
+         *
+         * @param dorisExecutionOptions the execution options of the DorisSink.
+         * @return this DorisSink.Builder.
+         */
         public Builder<IN> setDorisExecutionOptions(DorisExecutionOptions dorisExecutionOptions) {
             this.dorisExecutionOptions = dorisExecutionOptions;
             return this;
         }
 
+        /**
+         * Sets the {@link DorisRecordSerializer serializer} that transforms incoming records to
+         * DorisRecord
+         *
+         * @param serializer
+         * @return this DorisSink.Builder.
+         */
         public Builder<IN> setSerializer(DorisRecordSerializer<IN> serializer) {
             this.serializer = serializer;
             return this;
         }
 
+        /**
+         * Build the {@link DorisSink}.
+         *
+         * @return a DorisSink with the settings made for this builder.
+         */
         public DorisSink<IN> build() {
             Preconditions.checkNotNull(dorisOptions);
             Preconditions.checkNotNull(dorisExecutionOptions);
             Preconditions.checkNotNull(serializer);
-            EscapeHandler.handleEscape(dorisExecutionOptions.getStreamLoadProp());
-            if(dorisReadOptions == null) {
+            if (dorisReadOptions == null) {
                 dorisReadOptions = DorisReadOptions.builder().build();
             }
-            return new DorisSink<>(dorisOptions, dorisReadOptions, dorisExecutionOptions, serializer);
+            return new DorisSink<>(
+                    dorisOptions, dorisReadOptions, dorisExecutionOptions, serializer);
         }
     }
 }

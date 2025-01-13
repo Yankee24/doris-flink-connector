@@ -20,22 +20,23 @@ package org.apache.doris.flink.sink;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.commons.codec.binary.Base64;
+import org.apache.doris.flink.sink.writer.LoadConstants;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpHeaders;
 import org.apache.http.client.methods.HttpPut;
 import org.apache.http.entity.StringEntity;
+
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
-/**
- * Builder for HttpPut.
- */
+/** Builder for HttpPut. */
 public class HttpPutBuilder {
     String url;
     Map<String, String> header;
     HttpEntity httpEntity;
+
     public HttpPutBuilder() {
         header = new HashMap<>();
     }
@@ -47,6 +48,18 @@ public class HttpPutBuilder {
 
     public HttpPutBuilder addCommonHeader() {
         header.put(HttpHeaders.EXPECT, "100-continue");
+        return this;
+    }
+
+    public HttpPutBuilder addHiddenColumns(boolean add) {
+        if (add) {
+            header.put("hidden_columns", LoadConstants.DORIS_DELETE_SIGN);
+        }
+        return this;
+    }
+
+    public HttpPutBuilder addFileName(String fileName) {
+        header.put("fileName", fileName);
         return this;
     }
 
@@ -98,8 +111,14 @@ public class HttpPutBuilder {
     }
 
     public HttpPutBuilder setLabel(String label) {
-        header.put("label", label);
+        if (label != null) {
+            header.put("label", label);
+        }
         return this;
+    }
+
+    public String getLabel() {
+        return header.get("label");
     }
 
     public HttpPut build() {

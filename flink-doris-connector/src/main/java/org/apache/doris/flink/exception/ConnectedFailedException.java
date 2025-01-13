@@ -17,12 +17,12 @@
 
 package org.apache.doris.flink.exception;
 
-public class ConnectedFailedException extends DorisException {
+public class ConnectedFailedException extends DorisRuntimeException {
     public ConnectedFailedException(String server, Throwable cause) {
-        super("Connect to " + server + "failed.", cause);
+        super("Connect to " + server + " failed.", cause);
     }
 
     public ConnectedFailedException(String server, int statusCode, Throwable cause) {
-        super("Connect to " + server + "failed, status code is " + statusCode + ".", cause);
+        super("Connect to " + server + " failed, status code is " + statusCode + ".", cause);
     }
 }

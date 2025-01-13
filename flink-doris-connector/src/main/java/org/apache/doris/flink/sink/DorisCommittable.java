@@ -19,10 +19,8 @@ package org.apache.doris.flink.sink;
 
 import java.util.Objects;
 
-/**
- * DorisCommittable hold the info for Committer to commit.
- */
-public class DorisCommittable {
+/** DorisCommittable hold the info for Committer to commit. */
+public class DorisCommittable implements DorisAbstractCommittable {
     private final String hostPort;
     private final String db;
     private final long txnID;
@@ -54,9 +52,9 @@ public class DorisCommittable {
             return false;
         }
         DorisCommittable that = (DorisCommittable) o;
-        return txnID == that.txnID &&
-                Objects.equals(hostPort, that.hostPort) &&
-                Objects.equals(db, that.db);
+        return txnID == that.txnID
+                && Objects.equals(hostPort, that.hostPort)
+                && Objects.equals(db, that.db);
     }
 
     @Override
@@ -66,10 +64,15 @@ public class DorisCommittable {
 
     @Override
     public String toString() {
-        return "DorisCommittable{" +
-                "hostPort='" + hostPort + '\'' +
-                ", db='" + db + '\'' +
-                ", txnID=" + txnID +
-                '}';
+        return "DorisCommittable{"
+                + "hostPort='"
+                + hostPort
+                + '\''
+                + ", db='"
+                + db
+                + '\''
+                + ", txnID="
+                + txnID
+                + '}';
     }
 }

@@ -17,9 +17,7 @@
 
 package org.apache.doris.flink.sink;
 
-/**
- * enum of LoadStatus.
- */
+/** enum of LoadStatus. */
 public class LoadStatus {
     public static final String SUCCESS = "Success";
     public static final String PUBLISH_TIMEOUT = "Publish Timeout";

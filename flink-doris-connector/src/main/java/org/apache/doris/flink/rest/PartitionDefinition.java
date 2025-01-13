@@ -23,25 +23,26 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 
-/**
- * Doris  partition info.
- */
+/** Doris partition info. */
 public class PartitionDefinition implements Serializable, Comparable<PartitionDefinition> {
     private final String database;
     private final String table;
-
     private final String beAddress;
     private final Set<Long> tabletIds;
     private final String queryPlan;
 
-    public PartitionDefinition(String database, String table,
-                               String beAddress, Set<Long> tabletIds, String queryPlan)
+    public PartitionDefinition(
+            String database, String table, String beAddress, Set<Long> tabletIds, String queryPlan)
             throws IllegalArgumentException {
         this.database = database;
         this.table = table;
         this.beAddress = beAddress;
         this.tabletIds = tabletIds;
         this.queryPlan = queryPlan;
+    }
+
+    public static PartitionDefinition emptyPartition(String table) {
+        return new PartitionDefinition("", table, "", new HashSet<>(), "");
     }
 
     public String getBeAddress() {
@@ -110,11 +111,11 @@ public class PartitionDefinition implements Serializable, Comparable<PartitionDe
             return false;
         }
         PartitionDefinition that = (PartitionDefinition) o;
-        return Objects.equals(database, that.database) &&
-                Objects.equals(table, that.table) &&
-                Objects.equals(beAddress, that.beAddress) &&
-                Objects.equals(tabletIds, that.tabletIds) &&
-                Objects.equals(queryPlan, that.queryPlan) ;
+        return Objects.equals(database, that.database)
+                && Objects.equals(table, that.table)
+                && Objects.equals(beAddress, that.beAddress)
+                && Objects.equals(tabletIds, that.tabletIds)
+                && Objects.equals(queryPlan, that.queryPlan);
     }
 
     @Override
@@ -129,12 +130,37 @@ public class PartitionDefinition implements Serializable, Comparable<PartitionDe
 
     @Override
     public String toString() {
-        return "PartitionDefinition{" +
-                ", database='" + database + '\'' +
-                ", table='" + table + '\'' +
-                ", beAddress='" + beAddress + '\'' +
-                ", tabletIds=" + tabletIds +
-                ", queryPlan='" + queryPlan + '\'' +
-                '}';
+        return "PartitionDefinition{"
+                + ", database='"
+                + database
+                + '\''
+                + ", table='"
+                + table
+                + '\''
+                + ", beAddress='"
+                + beAddress
+                + '\''
+                + ", tabletIds="
+                + tabletIds
+                + ", queryPlan='"
+                + queryPlan
+                + '\''
+                + '}';
+    }
+
+    public String toStringWithoutPlan() {
+        return "PartitionDefinition{"
+                + "database='"
+                + database
+                + '\''
+                + ", table='"
+                + table
+                + '\''
+                + ", beAddress='"
+                + beAddress
+                + '\''
+                + ", tabletIds="
+                + tabletIds
+                + '}';
     }
 }

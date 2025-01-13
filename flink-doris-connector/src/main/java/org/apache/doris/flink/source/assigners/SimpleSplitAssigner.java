@@ -14,21 +14,24 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+
 package org.apache.doris.flink.source.assigners;
 
 import org.apache.doris.flink.source.enumerator.PendingSplitsCheckpoint;
 import org.apache.doris.flink.source.split.DorisSourceSplit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Optional;
 
-/**
- * The {@code SimpleSplitAssigner} hands out splits in a random order.
- **/
+/** The {@code SimpleSplitAssigner} hands out splits in a random order. */
 public class SimpleSplitAssigner implements DorisSplitAssigner {
 
+    private static final Logger LOG = LoggerFactory.getLogger(SimpleSplitAssigner.class);
     private final ArrayList<DorisSourceSplit> splits;
 
     public SimpleSplitAssigner(Collection<DorisSourceSplit> splits) {
@@ -42,12 +45,14 @@ public class SimpleSplitAssigner implements DorisSplitAssigner {
     }
 
     @Override
-    public void addSplits(Collection<DorisSourceSplit> splits) {
-        splits.addAll(splits);
+    public void addSplits(Collection<DorisSourceSplit> newSplits) {
+        LOG.info("Adding splits: {}", newSplits);
+        splits.addAll(newSplits);
     }
 
     @Override
     public PendingSplitsCheckpoint snapshotState(long checkpointId) {
+        LOG.info("Snapshot splits {} for checkpoint {}", splits, checkpointId);
         return new PendingSplitsCheckpoint(splits);
     }
 

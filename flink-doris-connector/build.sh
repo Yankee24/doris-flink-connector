@@ -23,39 +23,89 @@
 #
 ##############################################################
 
-set -eo pipefail
-
-ROOT=$(dirname "$0")
-ROOT=$(cd "$ROOT"; pwd)
-
-export DORIS_HOME=${ROOT}/../
-
-usage() {
-  echo "
-  Usage:
-    $0 --flink version --scala version # specify flink and scala version
-    $0 --tag                           # this is a build from tag
-  e.g.:
-    $0 --flink 1.14.3 --scala 2.12
-    $0 --tag
-  "
-  exit 1
-}
-
-OPTS=$(getopt \
-  -n $0 \
-  -o '' \
-  -o 'h' \
-  -l 'flink:' \
-  -l 'scala:' \
-  -l 'tag' \
-  -- "$@")
-
-if [ $# == 0 ] ; then
-    usage
+# Bugzilla 37848: When no TTY is available, don't output to console
+have_tty=0
+# shellcheck disable=SC2006
+if [[ "`tty`" != "not a tty" ]]; then
+    have_tty=1
 fi
 
-eval set -- "$OPTS"
+ # Only use colors if connected to a terminal
+if [[ ${have_tty} -eq 1 ]]; then
+  PRIMARY=$(printf '\033[38;5;082m')
+  RED=$(printf '\033[31m')
+  GREEN=$(printf '\033[32m')
+  YELLOW=$(printf '\033[33m')
+  BLUE=$(printf '\033[34m')
+  BOLD=$(printf '\033[1m')
+  RESET=$(printf '\033[0m')
+else
+  PRIMARY=""
+  RED=""
+  GREEN=""
+  YELLOW=""
+  BLUE=""
+  BOLD=""
+  RESET=""
+fi
+
+echo_r () {
+    # Color red: Error, Failed
+    [[ $# -ne 1 ]] && return 1
+    # shellcheck disable=SC2059
+    printf "[%sDoris%s] %s$1%s\n"  $BLUE $RESET $RED $RESET
+}
+
+echo_g () {
+    # Color green: Success
+    [[ $# -ne 1 ]] && return 1
+    # shellcheck disable=SC2059
+    printf "[%sDoris%s] %s$1%s\n"  $BLUE $RESET $GREEN $RESET
+}
+
+echo_y () {
+    # Color yellow: Warning
+    [[ $# -ne 1 ]] && return 1
+    # shellcheck disable=SC2059
+    printf "[%sDoris%s] %s$1%s\n"  $BLUE $RESET $YELLOW $RESET
+}
+
+echo_w () {
+    # Color yellow: White
+    [[ $# -ne 1 ]] && return 1
+    # shellcheck disable=SC2059
+    printf "[%sDoris%s] %s$1%s\n"  $BLUE $RESET $WHITE $RESET
+}
+
+# OS specific support.  $var _must_ be set to either true or false.
+cygwin=false
+os400=false
+# shellcheck disable=SC2006
+case "`uname`" in
+CYGWIN*) cygwin=true;;
+OS400*) os400=true;;
+esac
+
+# resolve links - $0 may be a softlink
+PRG="$0"
+
+while [[ -h "$PRG" ]]; do
+  # shellcheck disable=SC2006
+  ls=`ls -ld "$PRG"`
+  # shellcheck disable=SC2006
+  link=`expr "$ls" : '.*-> \(.*\)$'`
+  if expr "$link" : '/.*' > /dev/null; then
+    PRG="$link"
+  else
+    # shellcheck disable=SC2006
+    PRG=`dirname "$PRG"`/"$link"
+  fi
+done
+
+# Get standard environment variables
+# shellcheck disable=SC2006
+ROOT=$(cd "$(dirname "$PRG")" &>/dev/null && pwd)
+export DORIS_HOME=$(cd "$ROOT/../" &>/dev/null && pwd)
 
 . "${DORIS_HOME}"/env.sh
 
@@ -64,37 +114,79 @@ if [[ -f ${DORIS_HOME}/custom_env.sh ]]; then
     . "${DORIS_HOME}"/custom_env.sh
 fi
 
-BUILD_FROM_TAG=0
-FLINK_VERSION=0
-SCALA_VERSION=0
-while true; do
-    case "$1" in
-        --flink) FLINK_VERSION=$2 ; shift 2 ;;
-        --scala) SCALA_VERSION=$2 ; shift 2 ;;
-        --tag) BUILD_FROM_TAG=1 ; shift ;;
-        --) shift ;  break ;;
-        *) echo "Internal error" ; exit 1 ;;
+selectFlink() {
+  echo 'Flink-Doris-Connector supports multiple versions of flink. Which version do you need ?'
+  select flink in "1.15.x" "1.16.x" "1.17.x" "1.18.x" "1.19.x" "1.20.x"
+  do
+    case $flink in
+      "1.15.x")
+        return 1
+        ;;
+      "1.16.x")
+        return 2
+        ;;
+      "1.17.x")
+        return 3
+        ;;
+      "1.18.x")
+        return 4
+        ;;
+      "1.19.x")
+        return 5
+        ;;
+      "1.20.x")
+        return 6
+        ;;
+      *)
+        echo "invalid selected, exit.."
+        exit 1
+        ;;
     esac
-done
+  done
+}
 
-# extract minor version:
-# eg: 1.14.3 -> 1.14
-FLINK_MINOR_VERSION=0
-if [ ${FLINK_VERSION} != 0 ]; then
-    FLINK_MINOR_VERSION=${FLINK_VERSION%.*}
-    echo "FLINK_MINOR_VERSION: ${FLINK_MINOR_VERSION}"
+FLINK_VERSION=0
+selectFlink
+flinkVer=$?
+FLINK_PYTHON_ID="flink-python"
+if [ ${flinkVer} -eq 1 ]; then
+    FLINK_VERSION="1.15.0"
+    FLINK_PYTHON_ID="flink-python_2.12"
+elif [ ${flinkVer} -eq 2 ]; then
+    FLINK_VERSION="1.16.0"
+elif [ ${flinkVer} -eq 3 ]; then
+    FLINK_VERSION="1.17.0"
+elif [ ${flinkVer} -eq 4 ]; then
+    FLINK_VERSION="1.18.0"
+elif [ ${flinkVer} -eq 5 ]; then
+    FLINK_VERSION="1.19.0"
+elif [ ${flinkVer} -eq 6 ]; then
+    FLINK_VERSION="1.20.0"
 fi
 
-if [[ ${BUILD_FROM_TAG} -eq 1 ]]; then
-    rm -rf output/
-    ${MVN_BIN} clean package
+# extract major version:
+# eg: 3.1.2 -> 3
+FLINK_MAJOR_VERSION=0
+[ ${FLINK_VERSION} != 0 ] && FLINK_MAJOR_VERSION=${FLINK_VERSION%.*}
+
+echo_g " flink version: ${FLINK_VERSION}, major version: ${FLINK_MAJOR_VERSION}"
+echo_g " build starting..."
+
+${MVN_BIN} clean package -Dflink.version=${FLINK_VERSION} -Dflink.major.version=${FLINK_MAJOR_VERSION} -Dflink.python.id=${FLINK_PYTHON_ID} "$@"
+
+EXIT_CODE=$?
+if [ $EXIT_CODE -eq 0 ]; then
+  DIST_DIR=${DORIS_HOME}/dist
+  [ ! -d "$DIST_DIR" ] && mkdir "$DIST_DIR"
+  dist_jar=$(ls "${ROOT}"/target | grep "flink-doris-" | grep -v "sources.jar" | grep -v "original-")
+  rm -rf "${DIST_DIR}"/"${dist_jar}"
+  cp "${ROOT}"/target/"${dist_jar}" "$DIST_DIR"
+  echo_g "*****************************************************************"
+  echo_g "Successfully build Flink-Doris-Connector"
+  echo_g "dist: $DIST_DIR/$dist_jar "
+  echo_g "*****************************************************************"
+  exit 0
 else
-    rm -rf output/
-    ${MVN_BIN} clean package -Dscala.version=${SCALA_VERSION} -Dflink.version=${FLINK_VERSION} -Dflink.minor.version=${FLINK_MINOR_VERSION}
+  echo_w "Failed build Flink-Doris-Connector"
+  exit $EXIT_CODE
 fi
-
-echo "*****************************************"
-echo "Successfully build Flink-Doris-Connector"
-echo "*****************************************"
-
-exit 0

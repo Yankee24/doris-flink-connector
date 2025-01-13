@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+
 package org.apache.doris.flink.utils;
 
 import org.apache.flink.table.api.DataTypes;
@@ -32,6 +33,14 @@ public final class FactoryMocks {
                     Column.physical("a", DataTypes.STRING()),
                     Column.physical("b", DataTypes.INT()),
                     Column.physical("c", DataTypes.BOOLEAN()));
+
+    public static final ResolvedSchema SCHEMA_DT =
+            ResolvedSchema.of(
+                    Column.physical("a", DataTypes.STRING()),
+                    Column.physical("b", DataTypes.INT()),
+                    Column.physical("c", DataTypes.BOOLEAN()),
+                    Column.physical("d", DataTypes.DATE()),
+                    Column.physical("e", DataTypes.TIMESTAMP()));
 
     public static final DataType PHYSICAL_DATA_TYPE = SCHEMA.toPhysicalRowDataType();
 
